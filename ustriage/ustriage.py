@@ -16,6 +16,7 @@ import sys
 import time
 import webbrowser
 
+import cachetools
 import dateutil.parser
 import dateutil.relativedelta
 from launchpadlib.launchpad import Launchpad
@@ -36,9 +37,55 @@ PACKAGE_BLACKLIST = {
 }
 TEAMLPNAME = "ubuntu-server"
 
+POSSIBLE_BUG_STATUSES = [
+    "New",
+    "Incomplete",
+    "Opinion",
+    "Invalid",
+    "Won't Fix",
+    "Expired",
+    "Confirmed",
+    "Triaged",
+    "In Progress",
+    "Fix Committed",
+    "Fix Released",
+]
+
 DISTRIBUTION_RESOURCE_TYPE_LINK = (
     'https://api.launchpad.net/devel/#distribution'
 )
+
+@cachetools.cached(
+    cache=cachetools.LFUCache(maxsize=128),
+    key=lambda lpobj, attr: (lpobj._root, getattr(lpobj, '%s_link' % attr)),
+)
+def _get_cached_lp_link(lpobj, attr):
+    """Fetch an LP object through a cache
+
+    When <lpobj>.<foo>_link exists, this function can be used to fetch
+    <lpobj>.<foo> through a cache keyed on <foo>_link and the logged in object.
+    This is used for optimisation in the case that we need to get the same
+    <foo> across many objects. For example, we fetch 'distribution' and
+    'series' from many different source_package_publishing_history objects, and
+    doing those fetches through this cache saves a very large number of API
+    calls round trips.
+
+    The cache is keyed on (lpobj._root, <lpobj>.<attr>_link) to maintain
+    differing visibilities of objects across different logins.
+
+    lpobj._root is technically private, but seems to be the only sensible
+    option:
+
+        <cjwatson> rbasak: I think using _root is your only option
+        <cjwatson> It's technically private but in practice very stable
+
+    :param lazr.restfulclient.resource.Entry lpobj: the object from Launchpad
+    :param str attr: the key against the Launchpad object to fetch, for which a
+        <lpobj>.<attr>_link entry exists
+    :returns: the equivalent of <lpobj>.<attr>, but cached
+    :rtype: lazr.restfulclient.resource.Entry
+    """
+    return getattr(lpobj, attr)
 
 
 def searchTasks_in_all_active_series(distro, *args, **kwargs):  # noqa: E501 pylint: disable=invalid-name
@@ -87,7 +134,7 @@ def searchTasks_in_all_active_series(distro, *args, **kwargs):  # noqa: E501 pyl
         # distro_series so we can assume that a name attribute is always
         # present.
         result.update({
-            (task.bug_link, task.target.name): task
+            (task.bug_link, _get_cached_lp_link(task, 'target').name): task
             for task in series.searchTasks(*args, **kwargs)
         })
 
@@ -311,13 +358,15 @@ def create_bug_list(start_date, end_date, lpname, bugsubscriber,
             task.self_link: task for task in searchTasks_in_all_active_series(
                 project,
                 modified_since=start_date, bug_subscriber=team, tags=tag,
-                tags_combinator='All'
+                tags_combinator='All',
+                status=POSSIBLE_BUG_STATUSES,
             )}
         bugs_since_end = {
             task.self_link: task for task in searchTasks_in_all_active_series(
                 project,
                 modified_since=end_date, bug_subscriber=team, tags=tag,
-                tags_combinator='All'
+                tags_combinator='All',
+                status=POSSIBLE_BUG_STATUSES,
             )}
 
         # N/A for direct subscribers
@@ -328,18 +377,21 @@ def create_bug_list(start_date, end_date, lpname, bugsubscriber,
         bugs_since_start = {
             task.self_link: task for task in searchTasks_in_all_active_series(
                 project,
-                modified_since=start_date, structural_subscriber=team
+                modified_since=start_date, structural_subscriber=team,
+                status=POSSIBLE_BUG_STATUSES,
             )}
         bugs_since_end = {
             task.self_link: task for task in searchTasks_in_all_active_series(
                 project,
-                modified_since=end_date, structural_subscriber=team
+                modified_since=end_date, structural_subscriber=team,
+                status=POSSIBLE_BUG_STATUSES,
             )}
         already_sub_since_start = {
             task.self_link: task for task in searchTasks_in_all_active_series(
                 project,
                 modified_since=start_date, structural_subscriber=team,
-                bug_subscriber=team
+                bug_subscriber=team,
+                status=POSSIBLE_BUG_STATUSES,
             )}
 
     bugs_in_range = {
@@ -367,7 +419,11 @@ def report_current_backlog(lpname):
     launchpad = connect_launchpad()
     project = launchpad.distributions['Ubuntu']
     team = launchpad.people[lpname]
-    sub_bugs = searchTasks_in_all_active_series(project, bug_subscriber=team)
+    sub_bugs = searchTasks_in_all_active_series(
+        project,
+        bug_subscriber=team,
+        status=POSSIBLE_BUG_STATUSES,
+    )
     logging.info('Team \'%s\' currently subscribed to %d bugs',
                  lpname, len(sub_bugs))
 
