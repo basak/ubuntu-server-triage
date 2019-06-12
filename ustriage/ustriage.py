@@ -72,7 +72,10 @@ def searchTasks_in_all_active_series(distro, *args, **kwargs):  # noqa: E501 pyl
     # want the caller to have to know which to use, but YAGNI for now.
     assert distro.resource_type_link == DISTRIBUTION_RESOURCE_TYPE_LINK
 
-    result = {}
+    result = {
+        (task.bug_link, task.target.name): task
+        for task in distro.searchTasks(*args, **kwargs)
+    }
     for series in distro.series_collection:
         if not series.active:
             continue
