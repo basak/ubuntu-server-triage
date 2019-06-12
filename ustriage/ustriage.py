@@ -19,12 +19,15 @@ import webbrowser
 import cachetools
 import dateutil.parser
 import dateutil.relativedelta
+import itertools
 from launchpadlib.launchpad import Launchpad
 from launchpadlib.credentials import UnencryptedFileCredentialStore
 
 from lazr.restfulclient.errors import ClientError
 
 from .task import Task
+
+#import httplib2; httplib2.debuglevel=1
 
 PACKAGE_BLACKLIST = {
     'cloud-init',
@@ -88,6 +91,10 @@ def _get_cached_lp_link(lpobj, attr):
     return getattr(lpobj, attr)
 
 
+def fast_target_name(obj):
+    return obj.target_link.split('/')[-1]
+
+
 def searchTasks_in_all_active_series(distro, *args, **kwargs):  # noqa: E501 pylint: disable=invalid-name
     """Unionize searchTasks() for all active series of a distribution.
 
@@ -120,7 +127,7 @@ def searchTasks_in_all_active_series(distro, *args, **kwargs):  # noqa: E501 pyl
     assert distro.resource_type_link == DISTRIBUTION_RESOURCE_TYPE_LINK
 
     result = {
-        (task.bug_link, task.target.name): task
+        (task.bug_link, fast_target_name(task)): task
         for task in distro.searchTasks(*args, **kwargs)
     }
     for series in distro.series_collection:
@@ -134,7 +141,7 @@ def searchTasks_in_all_active_series(distro, *args, **kwargs):  # noqa: E501 pyl
         # distro_series so we can assume that a name attribute is always
         # present.
         result.update({
-            (task.bug_link, _get_cached_lp_link(task, 'target').name): task
+            (task.bug_link, fast_target_name(task)): task
             for task in series.searchTasks(*args, **kwargs)
         })
 
@@ -419,13 +426,17 @@ def report_current_backlog(lpname):
     launchpad = connect_launchpad()
     project = launchpad.distributions['Ubuntu']
     team = launchpad.people[lpname]
-    sub_bugs = searchTasks_in_all_active_series(
-        project,
-        bug_subscriber=team,
-        status=POSSIBLE_BUG_STATUSES,
+    sub_bugs_count = len(set((
+        task.bug_link for task in searchTasks_in_all_active_series(
+            project,
+            bug_subscriber=team,
+        )
+    )))
+    logging.info(
+        'Team \'%s\' currently subscribed to %d bugs',
+        lpname,
+        sub_bugs_count,
     )
-    logging.info('Team \'%s\' currently subscribed to %d bugs',
-                 lpname, len(sub_bugs))
 
 
 def print_expired_tagged_bugs(lpname, expiration, date_range, open_browser,
